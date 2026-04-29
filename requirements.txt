@@ -1,0 +1,11 @@
+langchain==0.2.14
+langchain-community==0.2.12
+langchain-core==0.2.32
+langchain-text-splitters
+sentence-transformers==2.6.1
+faiss-cpu
+transformers
+accelerate
+pypdf
+gradio
+numpy==1.26.4
