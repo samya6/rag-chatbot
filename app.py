@@ -1,72 +1,97 @@
-print("App starting...")
-
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.chains import RetrievalQA
-from transformers import pipeline
-from langchain.llms import HuggingFacePipeline
 import gradio as gr
 
-# Load PDF
-print("Loading PDF...")
-loader = PyPDFLoader("Sample.pdf")
-documents = loader.load()
-print("PDF loaded")
+from llm import load_llm
+from embeddings import load_embeddings
+from rag_pipeline import process_pdf, generate_answer
+from utils import get_file_hash
 
-# Chunking
-print("Chunking...")
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=100
-)
-docs = text_splitter.split_documents(documents)
-print("Chunking done")
 
-# Embeddings
-print("Creating embeddings...")
-embeddings = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
-print("Embeddings ready")
+# =========================
+# LOAD MODELS
+# =========================
 
-# Vector store
-print("Building vector store...")
-vectorstore = FAISS.from_documents(docs, embeddings)
-print("Vector store ready")
+print("Loading models...")
 
-# LLM
-print("Loading model...")
-pipe = pipeline(
-    "text2text-generation",
-    model="google/flan-t5-base",
-    max_new_tokens=512,
-    temperature=0.5
-)
-print("Model loaded")
+llm = load_llm()              # LLaMA 3 via Groq
+embeddings = load_embeddings()
 
-llm = HuggingFacePipeline(pipeline=pipe)
+print("Models loaded successfully")
 
-# RAG chain
-print("Creating RAG chain...")
-qa_chain = RetrievalQA.from_chain_type(
-    llm=llm,
-    retriever=vectorstore.as_retriever(search_kwargs={"k": 3})
-)
-print("RAG ready")
 
-# Function
-def ask_question(query):
-    return qa_chain.run(query)
+# =========================
+# CACHE
+# =========================
 
-# UI
-print("Launching UI...")
-interface = gr.Interface(
-    fn=ask_question,
-    inputs="text",
-    outputs="text",
-    title="RAG PDF Chatbot"
-)
+pdf_cache = {}
 
-interface.launch()
+
+# =========================
+# CHAT FUNCTION
+# =========================
+
+def chat_fn(file, message, history):
+    if file is None:
+        return history + [[message, "Please upload a PDF first."]]
+
+    if not message.strip():
+        return history
+
+    try:
+        file_path = file if isinstance(file, str) else file.name
+        file_id = get_file_hash(file_path)
+
+        # Process PDF once
+        if file_id not in pdf_cache:
+            print("Processing PDF...")
+            vectorstore, full_text = process_pdf(file_path, embeddings)
+            pdf_cache[file_id] = (vectorstore, full_text)
+            print("PDF cached")
+
+        vectorstore, full_text = pdf_cache[file_id]
+
+        print(f"User question: {message}")
+
+        # Generate answer (IMPORTANT: works with ChatGroq)
+        answer, docs = generate_answer(message, vectorstore, full_text, llm)
+
+        return history + [[message, answer.strip()]]
+
+    except Exception as e:
+        return history + [[message, f"Error: {str(e)}"]]
+
+
+# =========================
+# UI (CHAT STYLE)
+# =========================
+
+with gr.Blocks() as app:
+
+    gr.Markdown("# 📄 RAG PDF Chatbot (LLaMA 3 Powered)")
+    gr.Markdown("Upload a PDF and ask questions about it.")
+
+    file_input = gr.File(label="Upload PDF")
+
+    chatbot = gr.Chatbot(height=450)
+
+    msg = gr.Textbox(
+        placeholder="Ask a question about your document...",
+        label="Your Question"
+    )
+
+    clear = gr.Button("Clear Chat")
+
+    msg.submit(
+        fn=chat_fn,
+        inputs=[file_input, msg, chatbot],
+        outputs=chatbot
+    )
+
+    clear.click(lambda: [], None, chatbot)
+
+
+# =========================
+# RUN
+# =========================
+
+if __name__ == "__main__":
+    app.launch()
